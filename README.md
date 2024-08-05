@@ -1,3 +1,3 @@
 docker build -t test .
 
-docker run test --url=http://google.com --requests=300 --concurrency=10
+docker run test --url=https://www.guilhermeamorim.com --requests=300 --concurrency=10
