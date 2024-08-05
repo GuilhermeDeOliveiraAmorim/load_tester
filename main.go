@@ -8,43 +8,41 @@ import (
 	"time"
 )
 
-var (
-	url         string
-	requests    int
-	concurrency int
+const (
+	maxRetries     = 5
+	initialBackoff = 100 * time.Millisecond
+	maxBackoff     = 10 * time.Second
 )
 
-func init() {
-	flag.StringVar(&url, "url", "", "URL do serviço a ser testado.")
-	flag.IntVar(&requests, "requests", 100, "Número total de requests.")
-	flag.IntVar(&concurrency, "concurrency", 10, "Número de chamadas simultâneas.")
+type result struct {
+	status int
+	err    error
 }
 
 func main() {
+	url := flag.String("url", "", "URL do serviço a ser testado")
+	totalRequests := flag.Int("requests", 100, "Número total de requests")
+	concurrency := flag.Int("concurrency", 10, "Número de chamadas simultâneas")
 	flag.Parse()
 
-	if url == "" {
-		fmt.Println("URL do serviço é obrigatória.")
+	if *url == "" {
+		fmt.Println("A URL do serviço é obrigatória.")
+		flag.Usage()
 		return
 	}
 
-	start := time.Now()
+	results := make(chan result, *totalRequests)
 	var wg sync.WaitGroup
-	requestsPerGoroutine := requests / concurrency
-	results := make(chan int, requests)
 
-	for i := 0; i < concurrency; i++ {
+	startTime := time.Now()
+
+	for i := 0; i < *concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < requestsPerGoroutine; j++ {
-				resp, err := http.Get(url)
-				if err != nil {
-					results <- 0
-					continue
-				}
-				results <- resp.StatusCode
-				resp.Body.Close()
+			for j := 0; j < *totalRequests / *concurrency; j++ {
+				res, err := getWithRetry(*url)
+				results <- result{status: res, err: err}
 			}
 		}()
 	}
@@ -52,20 +50,61 @@ func main() {
 	wg.Wait()
 	close(results)
 
-	statusCount := make(map[int]int)
-	for status := range results {
-		statusCount[status]++
+	totalTime := time.Since(startTime)
+
+	report(totalTime, results)
+}
+
+func getWithRetry(url string) (int, error) {
+	var status int
+	var err error
+	backoff := initialBackoff
+
+	for i := 0; i < maxRetries; i++ {
+		resp, err := http.Get(url)
+		if err != nil {
+			status = 0
+		} else {
+			status = resp.StatusCode
+			resp.Body.Close()
+		}
+
+		if err == nil && status != http.StatusTooManyRequests {
+			return status, nil
+		}
+
+		time.Sleep(backoff)
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
 	}
 
-	totalTime := time.Since(start)
+	return status, err
+}
+
+func report(totalTime time.Duration, results chan result) {
+	totalRequests := 0
+	successfulRequests := 0
+	statusCodes := make(map[int]int)
+
+	for res := range results {
+		totalRequests++
+		if res.err == nil {
+			statusCodes[res.status]++
+			if res.status == http.StatusOK {
+				successfulRequests++
+			}
+		}
+	}
 
 	fmt.Printf("Tempo total gasto: %v\n", totalTime)
-	fmt.Printf("Quantidade total de requests realizados: %d\n", requests)
-	fmt.Printf("Quantidade de requests com status HTTP 200: %d\n", statusCount[http.StatusOK])
-	fmt.Println("Distribuição de outros códigos de status HTTP:")
-	for status, count := range statusCount {
-		if status != http.StatusOK {
-			fmt.Printf("HTTP %d: %d\n", status, count)
-		}
+	fmt.Printf("Quantidade total de requests realizados: %d\n", totalRequests)
+	fmt.Printf("Quantidade de requests com status HTTP 200: %d\n", successfulRequests)
+	fmt.Println("Distribuição dos códigos de status HTTP:")
+	for code, count := range statusCodes {
+		fmt.Printf("  %d: %d\n", code, count)
 	}
 }

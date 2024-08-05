@@ -1,10 +1,9 @@
-FROM golang:1.21.5-alpine
+FROM golang:1.21.5
 
 WORKDIR /app
 
 COPY . .
 
-RUN go mod tidy
-RUN go build -o load_tester
+RUN go build -o test
 
-ENTRYPOINT ["./load_tester"]
+ENTRYPOINT ["./test"]
